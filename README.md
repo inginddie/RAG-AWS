@@ -54,7 +54,7 @@ git clone https://github.com/jpospinalo/poe_rag.git
 cd poe_rag
 
 python -m venv .venv
-source .venv/bin/activate  # en Windows: .venv\Scripts\activate
+source .venv/bin/activate  # en ubuntu: .venv\bin\activate
 
 pip install -r requirements.txt
 
