@@ -20,7 +20,7 @@ build/
 *.swo
 
 # 4) Datos del RAG (no subir PDFs ni artefactos generados)
-data/bronze/
+
 
 # 5) Configuración sensible / secretos
 .env
