@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import chromadb
 import requests
@@ -147,7 +147,7 @@ class HybridEnsembleRetriever(BaseRetriever):
     retrievers: List[BaseRetriever]
     weights: List[float]
     c: int = 160  # constante RRF
-    id_key: str | None = "chunk_id"
+    id_key: Optional[str] = "chunk_id"
 
     def _get_relevant_documents(self, query: str) -> List[Document]:
         # 1) Obtener resultados de cada retriever

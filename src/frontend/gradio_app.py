@@ -122,10 +122,7 @@ def respond(
         display_answer = answer
 
     # Actualizar historial en formato messages
-    history = history + [
-        {"role": "user", "content": user_message},
-        {"role": "assistant", "content": display_answer},
-    ]
+    history = history + [{'role': 'user', 'content': user_message}, {'role': 'assistant', 'content': display_answer}]
 
     ctx_text = format_context(docs) if show_context else ""
 
@@ -215,4 +212,4 @@ Interactúa con un sistema RAG basado en cuentos de Edgar Allan Poe.
 
 if __name__ == "__main__":
     app = build_app()
-    app.launch(server_name="0.0.0.0", server_port=7860, theme="soft")
+    app.launch(server_name="0.0.0.0", server_port=7860, share=True)
