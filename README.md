@@ -1,27 +1,83 @@
-# RAG-AWS
+# Poe-RAG
 
-Sistema de Retrieval-Augmented Generation (RAG) implementado con AWS.
+Sistema de **Recuperación Aumentada por Generación (RAG)** basado en cuentos de Edgar Allan Poe.
+El proyecto combina:
 
-## Descripción
+- Ingesta y normalización de PDFs con **Docling**.
+- Chunking y enriquecimiento semántico de los textos con **Gemini**.
+- Indexación vectorial en **ChromaDB** usando **Ollama + embeddinggemma**.
+- Interfaz de chat en **Gradio** que responde preguntas sobre los cuentos.
 
-Este proyecto implementa un sistema RAG utilizando servicios de AWS para procesamiento y almacenamiento de documentos con capacidades de búsqueda semántica.
+---
 
-## Repositorio
+## Arquitectura general
 
-- **GitHub**: [inginddie/RAG-AWS](https://github.com/inginddie/RAG-AWS)
-- **Autor**: inginddie
+1. `data/`
+   - `silver/`  → documentos normalizados (JSONL por archivo).
+   - `silver/chunked/` → chunks generados para RAG.
+   - `gold/`   → chunks enriquecidos (resumen, keywords, entidades).
 
-## Instalación
+2. `src/`
+   - `ingest/`
+     - `ingest.py`      → carga PDFs, normaliza texto y metadata, genera capa *silver*.
+     - `normalize.py`   → reglas de limpieza y normalización de metadata.
+     - `spliter.py`     → divide documentos en chunks y genera `silver/chunked`.
+     - `enrich.py`      → enriquece chunks con Gemini y genera capa *gold*.
+   - `backend/`
+     - `vectorstore.py` → construye/actualiza la colección de Chroma a partir de *gold*.
+     - `retriever.py`   → define retrievers BM25 + vectorial y reranker con Ollama.
+     - `generator.py`   → arma la cadena RAG (retriever + Gemini) y expone `generate_answer`.
+   - `frontend/`
+     - `gradio_app.py`  → interfaz de chat en Gradio.
+
+3. `scripts/`
+   - `ec2_chorma_db.sh`         → instalación y despliegue de ChromaDB en Docker.
+   - `ec2_ollama_embeddings.sh` → instalación de Ollama y descarga de `embeddinggemma`.
+
+---
+
+## Requisitos
+
+- Python 3.10+
+- Docker (para ChromaDB)
+- Ollama (para embeddings y, opcionalmente, reranking)
+- Cuenta y API Key de Google para **Gemini**
+
+---
+
+## Instalación básica
+
+Clonar el repositorio y crear entorno virtual:
 
 ```bash
 git clone https://github.com/inginddie/RAG-AWS.git
 cd RAG-AWS
+
+python -m venv .venv
+source .venv/bin/activate  # en ubuntu: .venv\bin\activate
+
+pip install -r requirements.txt
 ```
 
-## Configuración
+## Pipeline básico de datos y ejecución
 
-Configura tus credenciales de AWS antes de usar el proyecto.
+```bash
+# 1) Ingesta y normalización (genera data/silver/*.jsonl)
+python -m src.ingest.ingest
 
-## Licencia
+# 2) Chunking (genera data/silver/chunked/*.jsonl)
+python -m src.spliter
 
-Este proyecto pertenece a inginddie.
+# 3) Enriquecimiento con Gemini (genera data/gold/*.jsonl)
+python -m src.ingest.enrich
+
+# 4) Construcción/actualización de la colección en Chroma
+python -m src.backend.vectorstore
+
+# 5) Lanzar la interfaz Gradio
+python -m src.frontend.gradio_app
+```
+La aplicación quedará disponible, por defecto, en:
+```bash
+http://0.0.0.0:7860
+```
