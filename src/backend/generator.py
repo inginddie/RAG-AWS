@@ -35,6 +35,7 @@ llm = ChatGoogleGenerativeAI(
     api_key=GOOGLE_API_KEY,
     temperature=0.2,
     max_output_tokens=2048,
+    convert_system_message_to_human=True
 )
 
 

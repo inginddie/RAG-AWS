@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 
 from src.backend.generator import generate_answer
+import os
 
 load_dotenv()
 
@@ -213,6 +214,36 @@ Interactúa con un sistema RAG basado en cuentos de Edgar Allan Poe.
     return demo
 
 
+from google import genai
+
+
+def list_models():
+    # Toma la API key desde GOOGLE_API_KEY o GEMINI_API_KEY
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Falta GOOGLE_API_KEY o GEMINI_API_KEY en el entorno")
+
+    client = genai.Client(api_key=api_key)
+
+    # Lista modelos base (Gemini, Gemma, etc.) y sus acciones soportadas
+    for model in client.models.list(config={"page_size": 100, "query_base": True}):
+        actions = getattr(model, "supported_actions", None)
+        print(model.name, actions)
+
+        # Si solo quieres los que soportan generateContent, descomenta:
+        # if actions and "generateContent" in actions:
+        #     print(model.name)
+
 if __name__ == "__main__":
+    #list_models()
+    
     app = build_app()
     app.launch(server_name="0.0.0.0", server_port=7860, theme="soft")
+   
+
+
+
+if __name__ == "__main__":
+    list_models()
+
+

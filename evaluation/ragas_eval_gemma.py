@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 import asyncio
 import json
 import os
@@ -24,7 +27,6 @@ from langchain_ollama import OllamaEmbeddings
 
 from src.backend.generator import generate_answer
 
-warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 # ============================================================
@@ -107,7 +109,7 @@ class RateLimitedGemini(ChatGoogleGenerativeAI):
       válido para la métrica de faithfulness (NLIStatementOutput).
     """
 
-    RATE_LIMIT_SECONDS: ClassVar[float] = float(os.getenv("RAGAS_LLM_DELAY", "7.0"))
+    RATE_LIMIT_SECONDS: ClassVar[float] = float(os.getenv("RAGAS_LLM_DELAY", "9.0"))
 
     # ---------- utilidades de limpieza ----------
 
@@ -210,8 +212,8 @@ def get_ragas_models():
     - LLM evaluador: Gemini (solo para RAGAS).
     - Embeddings: Ollama (ya configurados en tus variables de entorno).
     """
-    gemini_model = os.getenv("GEMINI_RAGAS_MODEL", "gemini-2.5-flash")
-    google_api_key = os.getenv("GOOGLE_API_KEY2")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
+    google_api_key = os.getenv("GOOGLE_API_KEY")
 
     llm_judge = RateLimitedGemini(
         model=gemini_model,
