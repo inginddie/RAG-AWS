@@ -213,7 +213,7 @@ def get_ragas_models():
     - Embeddings: Ollama (ya configurados en tus variables de entorno).
     """
     gemini_model = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
+    google_api_key = os.getenv("GOOGLE_API_KEY2")
 
     llm_judge = RateLimitedGemini(
         model=gemini_model,

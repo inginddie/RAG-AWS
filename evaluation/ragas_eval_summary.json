@@ -3,7 +3,7 @@
   "metrics": {
     "context_precision": 0.9999999999666667,
     "context_recall": 1.0,
-    "faithfulness": 0.9642857142857143,
-    "answer_relevancy": 0.7647813388479914
+    "faithfulness": 0.9285714285714286,
+    "answer_relevancy": 0.7644244713733084
   }
 }
