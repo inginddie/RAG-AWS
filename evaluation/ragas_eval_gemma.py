@@ -1,32 +1,45 @@
-# evaluation/ragas_eval.py
+# evaluation/ragas_eval_gemmini.py
 
 from __future__ import annotations
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+import asyncio
 import json
 import os
-from typing import Any, Dict, List, Tuple
+import time
+import warnings
+from typing import Any, Dict, List, Tuple, ClassVar
 
 from datasets import Dataset
 from ragas import evaluate
 from ragas.run_config import RunConfig
 from ragas.metrics import (
     context_precision,
-    context_recall,   # se importan, pero NO se usan aún
+    context_recall,
     faithfulness,
     answer_relevancy,
 )
 
-from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import OllamaEmbeddings
 
 from src.backend.generator import generate_answer
+
 
 
 # ============================================================
 #  1. Ítems de prueba
 # ============================================================
+'''
+TEST_ITEMS: List[Dict[str, str]] = [
+    {
+        "question": "¿Cómo se llamaba el gato del cuento 'El gato negro'?",
+        "ground_truth": "El gato del narrador se llamaba Plutón.",
+    },
+]
+'''
 
 TEST_ITEMS: List[Dict[str, str]] = [
     {
@@ -52,6 +65,9 @@ TEST_ITEMS: List[Dict[str, str]] = [
 #  2. Construir dataset a partir de tu RAG
 # ============================================================
 
+MAX_CONTEXT_DOCS = 3  # solo 2 chunks por pregunta para ahorrar tokens
+
+
 def build_eval_dataset() -> Tuple[Dataset, List[Dict[str, Any]]]:
     rows: List[Dict[str, Any]] = []
 
@@ -60,7 +76,10 @@ def build_eval_dataset() -> Tuple[Dataset, List[Dict[str, Any]]]:
         gt = item["ground_truth"]
 
         answer, docs = generate_answer(question)
-        contexts = [d.page_content for d in docs] if docs else []
+        answer = answer or ""
+
+        docs = (docs or [])[:MAX_CONTEXT_DOCS]
+        contexts = [d.page_content for d in docs]
 
         rows.append(
             {
@@ -76,27 +95,30 @@ def build_eval_dataset() -> Tuple[Dataset, List[Dict[str, Any]]]:
 
 
 # ============================================================
-#  3. Juez phi4-mini en Ollama con limpieza de JSON
-#     (ajustado SOLO para métricas tipo Verification,
-#      p. ej. context_precision)
+#  3. LLM evaluador: Gemini con rate limit y limpieza JSON
 # ============================================================
 
-class JsonStrictOllama(ChatOllama):
+class RateLimitedGemini(ChatGoogleGenerativeAI):
     """
-    Variante de ChatOllama que:
-    - Pide JSON al modelo (format="json" en __init__).
-    - Limpia fences ```json ... ``` y markdown.
-    - Asegura que la salida sea SIEMPRE un JSON válido del tipo:
-        {"reason": <str>, "verdict": <0|1>}
-      que es lo que espera el esquema Verification usado en context_precision.
+    Wrapper sobre ChatGoogleGenerativeAI para usarlo como juez en RAGAS:
+
+    - Aplica un delay entre llamadas para no acercarse al límite de QPM.
+    - Limpia fences ```json ... ``` de la salida.
+    - Intenta dejar un bloque JSON limpio.
+    - Si tras limpiar la salida queda vacía, devuelve un JSON neutro
+      válido para la métrica de faithfulness (NLIStatementOutput).
     """
+
+    RATE_LIMIT_SECONDS: ClassVar[float] = float(os.getenv("RAGAS_LLM_DELAY", "9.0"))
+
+    # ---------- utilidades de limpieza ----------
 
     @staticmethod
     def _strip_json_fences(text: str) -> str:
         s = text.strip()
         if s.startswith("```"):
             lines = s.splitlines()
-            # quitar primera línea ```...
+            # quitar primera línea ``` o ```json
             lines = lines[1:]
             # quitar última línea si es ```
             if lines and lines[-1].strip().startswith("```"):
@@ -105,122 +127,103 @@ class JsonStrictOllama(ChatOllama):
         return s
 
     @staticmethod
-    def _normalize_json(text: str) -> str:
+    def _extract_json_block(text: str) -> str:
         """
-        Para context_precision (Verification) normalizamos TODO a:
-            {"reason": <str>, "verdict": <0|1>}
-
-        Estrategia:
-        - Si no hay texto: JSON mínimo.
-        - Si el parseo falla: tratamos toda la salida como "reason" y ponemos verdict=0.
-        - Si hay JSON:
-            * Si ya viene con "reason" y "verdict": se fuerzan tipos.
-            * Si no, se encapsula como reason=str(data) y verdict=0.
+        Si el texto contiene texto adicional + JSON, intenta extraer
+        solo el primer bloque bien formado entre '{' y '}'.
         """
-
         s = text.strip()
-        if not s:
-            return json.dumps(
-                {"reason": "empty response from model", "verdict": 0},
-                ensure_ascii=False,
-            )
-
+        start = s.find("{")
+        end = s.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return s
+        candidate = s[start : end + 1]
         try:
-            data = json.loads(s)
+            json.loads(candidate)
+            return candidate
         except Exception:
-            # JSON roto: usamos la cadena original como reason
-            return json.dumps(
-                {
-                    "reason": s[:1000],
-                    "verdict": 0,
-                },
-                ensure_ascii=False,
-            )
+            return s
 
-        # Si ya viene en el formato esperado
-        if isinstance(data, dict) and "reason" in data and "verdict" in data:
-            return json.dumps(
-                {
-                    "reason": str(data["reason"]),
-                    "verdict": int(data["verdict"]),
-                },
-                ensure_ascii=False,
-            )
+    @classmethod
+    def _clean_text(cls, text: str) -> str:
+        if not isinstance(text, str):
+            return text
 
-        # Cualquier otra estructura JSON: la usamos como reason genérico
-        return json.dumps(
-            {
-                "reason": str(data)[:1000],
-                "verdict": 0,
-            },
-            ensure_ascii=False,
-        )
+        original = text
+        s = cls._strip_json_fences(original)
+        s = cls._extract_json_block(s)
+
+        # Si después de limpiar nos quedamos sin nada, devolvemos
+        # un JSON neutro compatible con NLIStatementOutput
+        # (para faithfulness): {"verdicts": []}
+        if not s.strip():
+            return json.dumps({"verdicts": []}, ensure_ascii=False)
+
+        return s
 
     def _postprocess_result(self, result):
-        gens = result.generations
+        gens = getattr(result, "generations", [])
 
-        # Aplanar lista de generaciones de forma defensiva
-        flat_gens = []
+        flat: List[Any] = []
         for item in gens:
             if isinstance(item, list):
-                flat_gens.extend(item)
+                flat.extend(item)
             else:
-                flat_gens.append(item)
+                flat.append(item)
 
-        for gen in flat_gens:
-            # 1) Arreglar message.content si existe
+        for gen in flat:
+            # gen.text
+            if hasattr(gen, "text") and isinstance(gen.text, str):
+                gen.text = self._clean_text(gen.text)
+
+            # gen.message.content (por si RAGAS usa esto)
             msg = getattr(gen, "message", None)
             if msg is not None:
                 content = getattr(msg, "content", None)
                 if isinstance(content, str):
-                    cleaned = self._strip_json_fences(content)
-                    cleaned = self._normalize_json(cleaned)
-                    msg.content = cleaned
-
-            # 2) Arreglar también gen.text si existe (RAGAS suele usar esto)
-            text = getattr(gen, "text", None)
-            if isinstance(text, str):
-                cleaned_text = self._strip_json_fences(text)
-                cleaned_text = self._normalize_json(cleaned_text)
-                gen.text = cleaned_text
+                    msg.content = self._clean_text(content)
 
         return result
 
+    # ---------- hooks internos de ChatGoogleGenerativeAI ----------
+
     def _generate(self, messages, stop=None, **kwargs):
+        delay = getattr(self, "RATE_LIMIT_SECONDS", 7.0)
+        if delay > 0:
+            time.sleep(delay)
+
+        kwargs.pop("stream", None)
         res = super()._generate(messages, stop=stop, **kwargs)
         return self._postprocess_result(res)
 
     async def _agenerate(self, messages, stop=None, **kwargs):
+        delay = getattr(self, "RATE_LIMIT_SECONDS", 7.0)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        kwargs.pop("stream", None)
         res = await super()._agenerate(messages, stop=stop, **kwargs)
         return self._postprocess_result(res)
 
 
+
 def get_ragas_models():
     """
-    LLM juez: phi4-mini:3.8b en Ollama (formato JSON)
-    Embeddings: embeddinggemma en Ollama
+    - LLM evaluador: Gemini (solo para RAGAS).
+    - Embeddings: Ollama (ya configurados en tus variables de entorno).
     """
-    judge_base_url = os.getenv(
-        "OLLAMA_EVAL_BASE_URL",
-        "https://ec0041129340.ngrok-free.app",
-    )
-    judge_model_name = os.getenv("OLLAMA_EVAL_MODEL", "phi4-mini:3.8b")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
+    google_api_key = os.getenv("GOOGLE_API_KEY2")
 
-    embed_base_url = os.getenv(
-        "OLLAMA_EMBED_BASE_URL",
-        "http://localhost:11434",
-    )
-    embed_model_name = os.getenv("OLLAMA_EMBED_MODEL", "embeddinggemma:latest")
-
-    llm_judge = JsonStrictOllama(
-        model=judge_model_name,
-        base_url=judge_base_url,
+    llm_judge = RateLimitedGemini(
+        model=gemini_model,
+        api_key=google_api_key,
         temperature=0.0,
-        num_ctx=2048,
-        num_predict=256,
-        format="json",
-        keep_alive=-1,
+        max_output_tokens=4098,
     )
+
+    embed_base_url = os.getenv("OLLAMA_EMBED_BASE_URL", "http://localhost:11434")
+    embed_model_name = os.getenv("OLLAMA_EMBED_MODEL", "embeddinggemma:latest")
 
     embeddings = OllamaEmbeddings(
         model=embed_model_name,
@@ -231,15 +234,17 @@ def get_ragas_models():
 
 
 # ============================================================
-#  4. Ejecutar evaluación RAGAS (solo context_precision)
+#  4. Ejecutar evaluación RAGAS (4 métricas)
 # ============================================================
 
 def run_ragas_evaluation(dataset: Dataset) -> Dict[str, Any]:
     llm_judge, embeddings = get_ragas_models()
 
-    # Por ahora solo context_precision
     metrics = [
         context_precision,
+        context_recall,
+        faithfulness,
+        answer_relevancy,
     ]
 
     for m in metrics:
@@ -248,10 +253,11 @@ def run_ragas_evaluation(dataset: Dataset) -> Dict[str, Any]:
 
     run_config = RunConfig(
         timeout=600,
-        max_workers=1,
+        max_workers=1,  # secuencial para cuidar el rate limit
     )
 
-    print("\n=== Ejecutando todas las métricas con una sola llamada a RAGAS ===")
+    print("\n=== Ejecutando métricas RAGAS ===")
+
     res = evaluate(
         dataset=dataset,
         metrics=metrics,
@@ -266,9 +272,13 @@ def run_ragas_evaluation(dataset: Dataset) -> Dict[str, Any]:
 
     for m in metrics:
         name = m.name
+        if name not in df.columns:
+            continue
+        series = df[name]
+        valid_values = [float(v) for v in series.tolist() if v == v]  # filtra NaN
         all_results[name] = {
-            "per_sample": df[name].tolist(),
-            "mean": float(df[name].mean()),
+            "per_sample": valid_values,
+            "mean": float(sum(valid_values) / len(valid_values)) if valid_values else float("nan"),
         }
 
     return all_results
@@ -278,11 +288,20 @@ def run_ragas_evaluation(dataset: Dataset) -> Dict[str, Any]:
 #  5. Guardar JSONs y punto de entrada
 # ============================================================
 
+def _ensure_parent_dir(path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
 def main(
     dataset_json_path: str = "evaluation/ragas_eval_dataset.json",
     summary_json_path: str = "evaluation/ragas_eval_summary.json",
-):
+) -> None:
     dataset, rows = build_eval_dataset()
+
+    _ensure_parent_dir(dataset_json_path)
+    _ensure_parent_dir(summary_json_path)
 
     with open(dataset_json_path, "w", encoding="utf-8") as f:
         json.dump(rows, f, ensure_ascii=False, indent=2)

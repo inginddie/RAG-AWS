@@ -1,6 +1,9 @@
 {
   "n_samples": 4,
   "metrics": {
-    "answer_relevancy": 0.4023791029629211
+    "context_precision": 0.9999999999666667,
+    "context_recall": 1.0,
+    "faithfulness": 0.9285714285714286,
+    "answer_relevancy": 0.7644244713733084
   }
 }
